@@ -1227,6 +1227,56 @@ class Test__RetryableMutateRowsWorker(unittest.TestCase):
         )
         self.assertEqual(result, expected_result)
 
+    def test_min_thread_max_batch(self):
+        from google.cloud.bigtable.row import DirectRow
+        from google.cloud.bigtable_v2.gapic import bigtable_client
+        from google.cloud.bigtable_admin_v2.gapic import bigtable_table_admin_client
+
+        # Setup:
+        #   - Mutate 2 rows.
+        # Action:
+        #   - Initial attempt will mutate all 2 rows.
+        # Expectation:
+        #   - Expect [success, non-retryable]
+
+        data_api = bigtable_client.BigtableClient(mock.Mock())
+        table_api = bigtable_table_admin_client.BigtableTableAdminClient(mock.Mock())
+        credentials = _make_credentials()
+        client = self._make_client(
+            project="project-id", credentials=credentials, admin=True
+        )
+        client._table_data_client = data_api
+        client._table_admin_client = table_api
+        instance = client.instance(instance_id=self.INSTANCE_ID)
+        table = self._make_table(self.TABLE_ID, instance)
+
+        row_1 = DirectRow(row_key=b"row_key", table=table)
+        row_1.set_cell("cf", b"col", b"value1")
+        row_2 = DirectRow(row_key=b"row_key_2", table=table)
+        row_2.set_cell("cf", b"col", b"value2")
+        row_3 = DirectRow(row_key=b"row_key_3", table=table)
+        row_3.set_cell("cf", b"col", b"value3")
+        row_4 = DirectRow(row_key=b"row_key_4", table=table)
+        row_4.set_cell("cf", b"col", b"value4")
+
+        response = self._make_responses([self.SUCCESS])
+
+        # Patch the stub used by the API method.
+        inner_api_calls = client._table_data_client._inner_api_calls
+        inner_api_calls["mutate_rows"] = mock.Mock(side_effect=[[response]])
+
+        worker = self._make_worker(
+            client, table.name, [[row_1], [row_2], [row_3], [row_4]]
+        )
+        table._MAX_THREAD_LIMIT = 2
+
+        statuses = worker._do_mutate_retryable_rows(0)
+
+        result = [status.code for status in statuses]
+        expected_result = [self.SUCCESS]
+
+        self.assertEqual(result, expected_result)
+
     def test_do_operation_completed(self):
         from google.cloud.bigtable.row import DirectRow
         from google.cloud.bigtable.table import DEFAULT_RETRY
